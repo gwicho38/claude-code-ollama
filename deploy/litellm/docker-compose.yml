@@ -23,7 +23,7 @@ services:
       - "--port"
       - "4100"
       - "--num_workers"
-      - "2"
+      - "1"
     # Ollama is in Docker too, exposed on host port 11435
     extra_hosts:
       - "host.docker.internal:host-gateway"
