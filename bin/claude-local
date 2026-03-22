@@ -396,8 +396,7 @@ launch_claude() {
   # Launch — exec replaces this process
   # --bare: use only ANTHROPIC_API_KEY (skip OAuth/keychain), skip hooks/plugins
   # --add-dir: re-enable CLAUDE.md discovery for the target project directory
-  # --effort low: disable extended thinking (local models don't support it)
-  exec claude --bare --add-dir "$(pwd)" --effort low --model "$model" "$@"
+  exec claude --bare --add-dir "$(pwd)" --model "$model" "$@"
 }
 
 ###############################################################################
