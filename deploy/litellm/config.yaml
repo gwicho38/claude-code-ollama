@@ -17,6 +17,7 @@ model_list:
     litellm_params:
       model: "ollama/qwen3:8b"
       api_base: "http://host.docker.internal:11435"
+      num_ctx: 32768
 
   - model_name: "huihui_ai/qwen3-abliterated:8b"
     litellm_params:
@@ -41,16 +42,19 @@ model_list:
     litellm_params:
       model: "ollama/qwen3:8b"
       api_base: "http://host.docker.internal:11435"
+      num_ctx: 32768
 
   - model_name: "claude-sonnet-4-5-20250514"
     litellm_params:
       model: "ollama/qwen3:8b"
       api_base: "http://host.docker.internal:11435"
+      num_ctx: 32768
 
   - model_name: "claude-opus-4-5-20250514"
     litellm_params:
       model: "ollama/qwen3:8b"
       api_base: "http://host.docker.internal:11435"
+      num_ctx: 32768
 
 # Wildcard fallback: any model not listed above is tried against Ollama
   - model_name: "ollama/*"
