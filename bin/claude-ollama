@@ -93,7 +93,8 @@ ollama_health() {
 
 litellm_health() {
   # LiteLLM exposes /health
-  _curl "${LITELLM_HOST}/health" >/dev/null 2>&1
+  # /health can block if models aren't loaded; /v1/models is fast and reliable
+  _curl "${LITELLM_HOST}/v1/models" >/dev/null 2>&1
 }
 
 ollama_models() {

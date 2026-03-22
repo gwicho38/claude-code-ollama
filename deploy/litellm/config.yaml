@@ -10,36 +10,36 @@ model_list:
   - model_name: "gemma3:12b-it-qat"
     litellm_params:
       model: "ollama/gemma3:12b-it-qat"
-      api_base: "http://localhost:11434"
+      api_base: "http://host.docker.internal:11435"
 
   # -- Qwen 3 --
   - model_name: "qwen3:8b"
     litellm_params:
       model: "ollama/qwen3:8b"
-      api_base: "http://localhost:11434"
+      api_base: "http://host.docker.internal:11435"
 
   - model_name: "huihui_ai/qwen3-abliterated:8b"
     litellm_params:
       model: "ollama/huihui_ai/qwen3-abliterated:8b"
-      api_base: "http://localhost:11434"
+      api_base: "http://host.docker.internal:11435"
 
   # -- Qwen 2.5 Coder --
   - model_name: "qwen2.5-coder:7b"
     litellm_params:
       model: "ollama/qwen2.5-coder:7b"
-      api_base: "http://localhost:11434"
+      api_base: "http://host.docker.internal:11435"
 
   # -- DeepSeek --
   - model_name: "deepseek-r1:7b"
     litellm_params:
       model: "ollama/deepseek-r1:7b"
-      api_base: "http://localhost:11434"
+      api_base: "http://host.docker.internal:11435"
 
 # Wildcard fallback: any model not listed above is tried against Ollama
   - model_name: "ollama/*"
     litellm_params:
       model: "ollama/*"
-      api_base: "http://localhost:11434"
+      api_base: "http://host.docker.internal:11435"
 
 litellm_settings:
   # Increase timeout for cold-start model loading
@@ -48,5 +48,5 @@ litellm_settings:
   telemetry: false
 
 general_settings:
-  # LiteLLM listens on this port
-  port: 4000
+  # LiteLLM listens on this port (4000 is taken by supabase-analytics)
+  port: 4100
