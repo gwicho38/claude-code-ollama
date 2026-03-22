@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# claude-ollama — Claude Code wrapper for local Ollama models
+# claude-local — Claude Code wrapper for local Ollama models
 #
 # Wraps the Claude CLI so it talks to an Ollama instance instead of the
 # Anthropic API.  Supports interactive setup, model discovery, and API-key
 # authentication (for reverse-proxy setups like nginx).
 #
 # Usage:
-#   claude-ollama                     — interactive model picker
-#   claude-ollama <model> [args...]   — launch with a specific model
-#   claude-ollama --setup             — (re)configure connection
-#   claude-ollama --test              — test connectivity
-#   claude-ollama --models            — list available models
-#   claude-ollama --help              — show this help
+#   claude-local                     — interactive model picker
+#   claude-local <model> [args...]   — launch with a specific model
+#   claude-local --setup             — (re)configure connection
+#   claude-local --test              — test connectivity
+#   claude-local --models            — list available models
+#   claude-local --help              — show this help
 #
 # Environment / .env:
 #   OLLAMA_HOST            Ollama server URL    (default: http://localhost:11434)
@@ -38,8 +38,14 @@ NC='\033[0m'
 ###############################################################################
 # Resolve config directory & .env
 ###############################################################################
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-ollama"
+# Resolve symlinks so SCRIPT_DIR points to the real repo, not the symlink parent
+_real_source="${BASH_SOURCE[0]}"
+while [[ -L "$_real_source" ]]; do
+  _real_source="$(readlink "$_real_source")"
+  [[ "$_real_source" != /* ]] && _real_source="$(dirname "${BASH_SOURCE[0]}")/$_real_source"
+done
+SCRIPT_DIR="$(cd "$(dirname "$_real_source")/.." && pwd)"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-local"
 
 # Load .env — check project dir first, then config dir
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
@@ -118,7 +124,7 @@ ollama_version() {
 # Interactive setup
 ###############################################################################
 run_setup() {
-  echo -e "${BOLD}claude-ollama setup${NC}"
+  echo -e "${BOLD}claude-local setup${NC}"
   echo -e "${DIM}Configure your Ollama connection${NC}"
   echo ""
 
@@ -172,7 +178,7 @@ run_setup() {
   # Write config
   mkdir -p "$CONFIG_DIR"
   cat > "$CONFIG_DIR/.env" <<ENVEOF
-# claude-ollama configuration — generated $(date +%Y-%m-%d)
+# claude-local configuration — generated $(date +%Y-%m-%d)
 OLLAMA_HOST=${host}
 LITELLM_HOST=${litellm}
 OLLAMA_API_KEY=${key}
@@ -183,14 +189,14 @@ ENVEOF
 
   echo ""
   ok "Config saved to ${CONFIG_DIR}/.env"
-  echo -e "${DIM}Run 'claude-ollama' to start, or 'claude-ollama --test' to verify.${NC}"
+  echo -e "${DIM}Run 'claude-local' to start, or 'claude-local --test' to verify.${NC}"
 }
 
 ###############################################################################
 # Connection test
 ###############################################################################
 run_test() {
-  echo -e "${BOLD}claude-ollama${NC} — connectivity test"
+  echo -e "${BOLD}claude-local${NC} — connectivity test"
   echo -e "${DIM}Ollama:  ${OLLAMA_HOST}${NC}"
   echo -e "${DIM}LiteLLM: ${LITELLM_HOST}${NC}"
   [[ -n "$OLLAMA_API_KEY" ]] && echo -e "${DIM}Auth:    API key (${OLLAMA_API_KEY:0:8}...)${NC}"
@@ -319,7 +325,7 @@ run_list_models() {
 ###############################################################################
 pick_model() {
   if ! ollama_health; then
-    die "Cannot reach Ollama at ${OLLAMA_HOST}. Run 'claude-ollama --setup' to configure."
+    die "Cannot reach Ollama at ${OLLAMA_HOST}. Run 'claude-local --setup' to configure."
   fi
 
   local model_json
@@ -396,15 +402,15 @@ launch_claude() {
 ###############################################################################
 show_help() {
   cat <<'HELPEOF'
-claude-ollama — Claude Code wrapper for Ollama
+claude-local — Claude Code wrapper for Ollama
 
 USAGE
-  claude-ollama                        Interactive model picker + launch
-  claude-ollama <model> [args...]      Launch with specific model
-  claude-ollama --setup                Configure Ollama connection
-  claude-ollama --test                 Test connectivity & API compatibility
-  claude-ollama --models               List available models
-  claude-ollama --help                 Show this help
+  claude-local                        Interactive model picker + launch
+  claude-local <model> [args...]      Launch with specific model
+  claude-local --setup                Configure Ollama connection
+  claude-local --test                 Test connectivity & API compatibility
+  claude-local --models               List available models
+  claude-local --help                 Show this help
 
 ENVIRONMENT
   OLLAMA_HOST              Ollama server URL (default: http://localhost:11434)
@@ -416,14 +422,14 @@ ENVIRONMENT
   Model discovery uses OLLAMA_HOST (native Ollama API).
 
 CONFIG
-  Config is stored at ~/.config/claude-ollama/.env
+  Config is stored at ~/.config/claude-local/.env
   Project-local .env files are also loaded (takes precedence).
   Run --setup for interactive configuration.
 
 EXAMPLES
-  claude-ollama qwen3:8b
-  claude-ollama deepseek-coder-v2 --verbose
-  LITELLM_HOST=http://192.168.8.239:4000 claude-ollama qwen3:8b
+  claude-local qwen3:8b
+  claude-local deepseek-coder-v2 --verbose
+  LITELLM_HOST=http://192.168.8.239:4000 claude-local qwen3:8b
 
 HELPEOF
 }
