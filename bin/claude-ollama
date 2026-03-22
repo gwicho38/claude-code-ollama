@@ -16,7 +16,8 @@ set -euo pipefail
 #   claude-ollama --help              — show this help
 #
 # Environment / .env:
-#   OLLAMA_HOST            Ollama server URL  (default: http://localhost:11434)
+#   OLLAMA_HOST            Ollama server URL    (default: http://localhost:11434)
+#   LITELLM_HOST           LiteLLM proxy URL    (default: http://localhost:4000)
 #   OLLAMA_API_KEY         API key for auth-proxy setups
 #   OLLAMA_DEFAULT_MODEL   Skip the picker and use this model
 
@@ -49,6 +50,7 @@ fi
 
 # Defaults
 OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
+LITELLM_HOST="${LITELLM_HOST:-http://localhost:4000}"
 OLLAMA_API_KEY="${OLLAMA_API_KEY:-}"
 OLLAMA_DEFAULT_MODEL="${OLLAMA_DEFAULT_MODEL:-}"
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}"
@@ -89,8 +91,21 @@ ollama_health() {
   _curl "${OLLAMA_HOST}/" >/dev/null 2>&1
 }
 
+litellm_health() {
+  # LiteLLM exposes /health
+  _curl "${LITELLM_HOST}/health" >/dev/null 2>&1
+}
+
 ollama_models() {
-  # /api/tags returns {"models":[{"name":"...","size":...}, ...]}
+  # Try LiteLLM's /v1/models first (OpenAI format), fall back to Ollama /api/tags
+  local litellm_models
+  litellm_models=$(_curl "${LITELLM_HOST}/v1/models" 2>/dev/null || true)
+  if [[ -n "$litellm_models" ]] && echo "$litellm_models" | jq -e '.data' &>/dev/null; then
+    # Convert OpenAI /v1/models format to Ollama /api/tags format for consistency
+    echo "$litellm_models" | jq '{models: [.data[] | {name: .id, model: .id, size: 0, modified_at: (.created // 0 | tostring)}]}'
+    return
+  fi
+  # Fall back to Ollama native API
   _curl "${OLLAMA_HOST}/api/tags" 2>/dev/null
 }
 
@@ -111,6 +126,11 @@ run_setup() {
   read -rp "$(echo -e "${WHITE}Ollama host${NC} [${DIM}${default_host}${NC}]: ")" input_host
   local host="${input_host:-$default_host}"
 
+  # LiteLLM host
+  local default_litellm="${LITELLM_HOST}"
+  read -rp "$(echo -e "${WHITE}LiteLLM proxy host${NC} [${DIM}${default_litellm}${NC}]: ")" input_litellm
+  local litellm="${input_litellm:-$default_litellm}"
+
   # API key
   local default_key="${OLLAMA_API_KEY}"
   local key_display=""
@@ -120,18 +140,26 @@ run_setup() {
   read -rp "$(echo -e "${WHITE}API key${NC} (blank if none) [${DIM}${key_display}${NC}]: ")" input_key
   local key="${input_key:-$default_key}"
 
-  # Test connection
+  # Test connections
   echo ""
-  info "Testing connection to ${host}..."
-  OLLAMA_HOST="$host" OLLAMA_API_KEY="$key"
+  OLLAMA_HOST="$host" OLLAMA_API_KEY="$key" LITELLM_HOST="$litellm"
+
+  info "Testing Ollama at ${host}..."
   if ollama_health; then
     ok "Connected to Ollama"
-
     local ver
-    ver=$(OLLAMA_HOST="$host" OLLAMA_API_KEY="$key" ollama_version 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)
+    ver=$(ollama_version 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)
     [[ -n "$ver" ]] && echo -e "  ${DIM}version: ${ver}${NC}"
   else
-    warn "Could not reach ${host} — saving config anyway"
+    warn "Could not reach Ollama at ${host}"
+  fi
+
+  info "Testing LiteLLM at ${litellm}..."
+  if litellm_health; then
+    ok "Connected to LiteLLM proxy"
+  else
+    warn "Could not reach LiteLLM at ${litellm} — you may need to deploy it first"
+    echo -e "  ${DIM}Run: ./deploy/setup.sh${NC}"
   fi
 
   # Default model
@@ -145,6 +173,7 @@ run_setup() {
   cat > "$CONFIG_DIR/.env" <<ENVEOF
 # claude-ollama configuration — generated $(date +%Y-%m-%d)
 OLLAMA_HOST=${host}
+LITELLM_HOST=${litellm}
 OLLAMA_API_KEY=${key}
 OLLAMA_DEFAULT_MODEL=${model}
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
@@ -161,83 +190,90 @@ ENVEOF
 ###############################################################################
 run_test() {
   echo -e "${BOLD}claude-ollama${NC} — connectivity test"
-  echo -e "${DIM}Host: ${OLLAMA_HOST}${NC}"
-  [[ -n "$OLLAMA_API_KEY" ]] && echo -e "${DIM}Auth: API key (${OLLAMA_API_KEY:0:8}...)${NC}"
+  echo -e "${DIM}Ollama:  ${OLLAMA_HOST}${NC}"
+  echo -e "${DIM}LiteLLM: ${LITELLM_HOST}${NC}"
+  [[ -n "$OLLAMA_API_KEY" ]] && echo -e "${DIM}Auth:    API key (${OLLAMA_API_KEY:0:8}...)${NC}"
   echo ""
 
-  # 1. Health
-  if ollama_health; then
-    ok "Ollama is reachable"
-  else
-    die "Cannot reach Ollama at ${OLLAMA_HOST}"
-  fi
-
-  # 2. Version
-  local ver
-  ver=$(ollama_version 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)
-  if [[ -n "$ver" ]]; then
-    ok "Ollama version: ${ver}"
-  else
-    warn "Could not fetch version (non-critical)"
-  fi
-
-  # 3. Models
-  local model_json
-  model_json=$(ollama_models 2>/dev/null || true)
-  if [[ -n "$model_json" ]]; then
-    local count
-    count=$(echo "$model_json" | jq '.models | length' 2>/dev/null || echo 0)
-    ok "${count} model(s) available"
-    if [[ "$count" -gt 0 ]]; then
-      echo ""
-      echo -e "${WHITE}Models:${NC}"
-      echo "$model_json" | jq -r '.models[].name' 2>/dev/null | while read -r m; do
-        echo -e "  ${MAGENTA}•${NC} $m"
-      done
-    fi
-  else
-    warn "Could not list models"
-  fi
-
-  # 4. Check Anthropic Messages API compatibility (/v1/messages)
-  echo ""
-  info "Checking Anthropic Messages API compatibility..."
-  local msgs_url="${OLLAMA_HOST}/v1/messages"
   local -a auth_h=()
   local ah
   ah="$(_auth_header)"
   [[ -n "$ah" ]] && auth_h=(-H "$ah")
 
+  # --- Ollama direct ---
+  echo -e "${WHITE}Ollama (${OLLAMA_HOST})${NC}"
+  if ollama_health; then
+    ok "Reachable"
+  else
+    warn "Cannot reach Ollama at ${OLLAMA_HOST}"
+  fi
+
+  local ver
+  ver=$(ollama_version 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)
+  [[ -n "$ver" ]] && ok "Version: ${ver}"
+
+  local model_json
+  model_json=$(_curl "${OLLAMA_HOST}/api/tags" 2>/dev/null || true)
+  if [[ -n "$model_json" ]]; then
+    local count
+    count=$(echo "$model_json" | jq '.models | length' 2>/dev/null || echo 0)
+    ok "${count} model(s) available"
+    if [[ "$count" -gt 0 ]]; then
+      echo "$model_json" | jq -r '.models[].name' 2>/dev/null | while read -r m; do
+        echo -e "  ${MAGENTA}•${NC} $m"
+      done
+    fi
+  fi
+
+  # --- LiteLLM proxy ---
+  echo ""
+  echo -e "${WHITE}LiteLLM (${LITELLM_HOST})${NC}"
+  if litellm_health; then
+    ok "Reachable"
+  else
+    warn "Cannot reach LiteLLM at ${LITELLM_HOST}"
+    echo -e "  ${DIM}Deploy with: ./deploy/setup.sh${NC}"
+  fi
+
+  # Check /v1/models via LiteLLM
+  local litellm_models
+  litellm_models=$(_curl "${LITELLM_HOST}/v1/models" 2>/dev/null || true)
+  if [[ -n "$litellm_models" ]] && echo "$litellm_models" | jq -e '.data' &>/dev/null; then
+    local lcount
+    lcount=$(echo "$litellm_models" | jq '.data | length' 2>/dev/null || echo 0)
+    ok "${lcount} model(s) via /v1/models"
+  fi
+
+  # Check Anthropic Messages API via LiteLLM
+  info "Checking /v1/messages (Anthropic format)..."
+  local msgs_url="${LITELLM_HOST}/v1/messages"
   local status_code
   status_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 \
     -X POST "${auth_h[@]}" \
     -H "Content-Type: application/json" \
     -d '{"model":"test","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
-    "$msgs_url" 2>/dev/null || echo "000")
+    "$msgs_url" 2>/dev/null) || true
 
-  if [[ "$status_code" == "000" ]]; then
-    warn "/v1/messages endpoint not reachable"
-    echo -e "  ${DIM}Claude Code requires the Anthropic Messages API format.${NC}"
-    echo -e "  ${DIM}Consider adding a proxy (litellm, openai-to-anthropic) in front of Ollama.${NC}"
+  if [[ -z "$status_code" || "$status_code" == "000" ]]; then
+    warn "/v1/messages not reachable"
   elif [[ "$status_code" =~ ^(200|400|401|422)$ ]]; then
-    ok "/v1/messages endpoint responds (HTTP ${status_code})"
+    ok "/v1/messages responds (HTTP ${status_code}) — Claude Code compatible"
   else
     warn "/v1/messages returned HTTP ${status_code}"
-    echo -e "  ${DIM}May need a translation proxy for Claude Code compatibility.${NC}"
   fi
 
-  # 5. Check OpenAI-compatible endpoint (/v1/chat/completions)
-  info "Checking OpenAI-compatible endpoint..."
-  local oai_url="${OLLAMA_HOST}/v1/chat/completions"
+  # Check OpenAI-compat via LiteLLM
+  info "Checking /v1/chat/completions (OpenAI format)..."
+  local oai_url="${LITELLM_HOST}/v1/chat/completions"
   status_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 \
     -X POST "${auth_h[@]}" \
     -H "Content-Type: application/json" \
     -d '{"model":"test","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
-    "$oai_url" 2>/dev/null || echo "000")
+    "$oai_url" 2>/dev/null) || true
 
-  if [[ "$status_code" == "000" ]]; then
+  if [[ -z "$status_code" || "$status_code" == "000" ]]; then
     warn "/v1/chat/completions not reachable"
-  elif [[ "$status_code" =~ ^(200|400|401|422|404)$ ]]; then
+  elif [[ "$status_code" =~ ^(200|400|401|422)$ ]]; then
     ok "/v1/chat/completions responds (HTTP ${status_code})"
   else
     warn "/v1/chat/completions returned HTTP ${status_code}"
@@ -342,11 +378,11 @@ launch_claude() {
 
   need_cmd claude
 
-  echo -e "${GREEN}Launching${NC} ${BOLD}Claude Code${NC} → ${CYAN}${OLLAMA_HOST}${NC} / ${MAGENTA}${BOLD}${model}${NC}"
+  echo -e "${GREEN}Launching${NC} ${BOLD}Claude Code${NC} → ${CYAN}${LITELLM_HOST}${NC} / ${MAGENTA}${BOLD}${model}${NC}"
   echo ""
 
-  # Point Claude Code at the Ollama endpoint
-  export ANTHROPIC_BASE_URL="${OLLAMA_HOST}"
+  # Point Claude Code at the LiteLLM proxy (Anthropic Messages API compatible)
+  export ANTHROPIC_BASE_URL="${LITELLM_HOST}"
   export ANTHROPIC_API_KEY="${OLLAMA_API_KEY:-not-needed}"
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC}"
 
@@ -370,9 +406,13 @@ USAGE
   claude-ollama --help                 Show this help
 
 ENVIRONMENT
-  OLLAMA_HOST              Server URL        (default: http://localhost:11434)
+  OLLAMA_HOST              Ollama server URL (default: http://localhost:11434)
+  LITELLM_HOST             LiteLLM proxy URL (default: http://localhost:4000)
   OLLAMA_API_KEY           Auth proxy key    (default: none)
   OLLAMA_DEFAULT_MODEL     Auto-select model (default: none / interactive)
+
+  Claude Code connects to LITELLM_HOST (Anthropic Messages API).
+  Model discovery uses OLLAMA_HOST (native Ollama API).
 
 CONFIG
   Config is stored at ~/.config/claude-ollama/.env
@@ -382,7 +422,7 @@ CONFIG
 EXAMPLES
   claude-ollama qwen3:8b
   claude-ollama deepseek-coder-v2 --verbose
-  OLLAMA_HOST=http://192.168.8.239:11434 claude-ollama llama3.1
+  LITELLM_HOST=http://192.168.8.239:4000 claude-ollama qwen3:8b
 
 HELPEOF
 }

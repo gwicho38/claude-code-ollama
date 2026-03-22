@@ -1,0 +1,31 @@
+# systemd service — alternative to Docker
+#
+# Install:
+#   sudo cp litellm.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now litellm
+#
+# Logs:
+#   journalctl -u litellm -f
+
+[Unit]
+Description=LiteLLM Proxy (Anthropic API → Ollama)
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lefvpc
+WorkingDirectory=/opt/litellm
+ExecStart=/usr/local/bin/litellm --config /opt/litellm/config.yaml --port 4000 --num_workers 2
+Restart=on-failure
+RestartSec=5
+Environment=OLLAMA_API_BASE=http://localhost:11434
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/litellm
+
+[Install]
+WantedBy=multi-user.target
