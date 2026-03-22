@@ -31,30 +31,36 @@ model_list:
       api_base: "http://host.docker.internal:11435"
 
   # -- DeepSeek --
+  - model_name: "deepseek-r1:14b"
+    litellm_params:
+      model: "ollama/deepseek-r1:14b"
+      api_base: "http://host.docker.internal:11435"
+      num_ctx: 16384
+
   - model_name: "deepseek-r1:7b"
     litellm_params:
       model: "ollama/deepseek-r1:7b"
       api_base: "http://host.docker.internal:11435"
 
-# -- Claude model aliases → route to qwen3:8b --
+# -- Claude model aliases → route to deepseek-r1:14b --
   # Claude Code sends background requests using these model names internally
   - model_name: "claude-haiku-4-5-20251001"
     litellm_params:
-      model: "ollama/qwen3:8b"
+      model: "ollama/deepseek-r1:14b"
       api_base: "http://host.docker.internal:11435"
-      num_ctx: 32768
+      num_ctx: 16384
 
   - model_name: "claude-sonnet-4-5-20250514"
     litellm_params:
-      model: "ollama/qwen3:8b"
+      model: "ollama/deepseek-r1:14b"
       api_base: "http://host.docker.internal:11435"
-      num_ctx: 32768
+      num_ctx: 16384
 
   - model_name: "claude-opus-4-5-20250514"
     litellm_params:
-      model: "ollama/qwen3:8b"
+      model: "ollama/deepseek-r1:14b"
       api_base: "http://host.docker.internal:11435"
-      num_ctx: 32768
+      num_ctx: 16384
 
 # Wildcard fallback: any model not listed above is tried against Ollama
   - model_name: "ollama/*"
