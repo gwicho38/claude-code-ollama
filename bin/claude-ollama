@@ -1,0 +1,442 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# claude-ollama — Claude Code wrapper for local Ollama models
+#
+# Wraps the Claude CLI so it talks to an Ollama instance instead of the
+# Anthropic API.  Supports interactive setup, model discovery, and API-key
+# authentication (for reverse-proxy setups like nginx).
+#
+# Usage:
+#   claude-ollama                     — interactive model picker
+#   claude-ollama <model> [args...]   — launch with a specific model
+#   claude-ollama --setup             — (re)configure connection
+#   claude-ollama --test              — test connectivity
+#   claude-ollama --models            — list available models
+#   claude-ollama --help              — show this help
+#
+# Environment / .env:
+#   OLLAMA_HOST            Ollama server URL  (default: http://localhost:11434)
+#   OLLAMA_API_KEY         API key for auth-proxy setups
+#   OLLAMA_DEFAULT_MODEL   Skip the picker and use this model
+
+###############################################################################
+# ANSI helpers
+###############################################################################
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m'
+
+###############################################################################
+# Resolve config directory & .env
+###############################################################################
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-ollama"
+
+# Load .env — check project dir first, then config dir
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+  set -a; source "$SCRIPT_DIR/.env"; set +a
+elif [[ -f "$CONFIG_DIR/.env" ]]; then
+  set -a; source "$CONFIG_DIR/.env"; set +a
+fi
+
+# Defaults
+OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
+OLLAMA_API_KEY="${OLLAMA_API_KEY:-}"
+OLLAMA_DEFAULT_MODEL="${OLLAMA_DEFAULT_MODEL:-}"
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}"
+
+###############################################################################
+# Helpers
+###############################################################################
+die()  { echo -e "${RED}error:${NC} $*" >&2; exit 1; }
+info() { echo -e "${CYAN}::${NC} $*"; }
+ok()   { echo -e "${GREEN}✓${NC} $*"; }
+warn() { echo -e "${YELLOW}!${NC} $*"; }
+
+need_cmd() {
+  command -v "$1" &>/dev/null || die "'$1' is required but not found in PATH"
+}
+
+# Build curl auth header if API key is set
+_auth_header() {
+  if [[ -n "$OLLAMA_API_KEY" ]]; then
+    echo "Authorization: Bearer $OLLAMA_API_KEY"
+  fi
+}
+
+# Curl wrapper that adds auth + timeout
+_curl() {
+  local -a headers=()
+  local auth
+  auth="$(_auth_header)"
+  [[ -n "$auth" ]] && headers+=(-H "$auth")
+  curl -sf --connect-timeout 5 --max-time 10 "${headers[@]}" "$@"
+}
+
+###############################################################################
+# API calls
+###############################################################################
+ollama_health() {
+  # Ollama's root endpoint returns "Ollama is running"
+  _curl "${OLLAMA_HOST}/" >/dev/null 2>&1
+}
+
+ollama_models() {
+  # /api/tags returns {"models":[{"name":"...","size":...}, ...]}
+  _curl "${OLLAMA_HOST}/api/tags" 2>/dev/null
+}
+
+ollama_version() {
+  _curl "${OLLAMA_HOST}/api/version" 2>/dev/null
+}
+
+###############################################################################
+# Interactive setup
+###############################################################################
+run_setup() {
+  echo -e "${BOLD}claude-ollama setup${NC}"
+  echo -e "${DIM}Configure your Ollama connection${NC}"
+  echo ""
+
+  # Host
+  local default_host="${OLLAMA_HOST}"
+  read -rp "$(echo -e "${WHITE}Ollama host${NC} [${DIM}${default_host}${NC}]: ")" input_host
+  local host="${input_host:-$default_host}"
+
+  # API key
+  local default_key="${OLLAMA_API_KEY}"
+  local key_display=""
+  if [[ -n "$default_key" ]]; then
+    key_display="${default_key:0:8}...${default_key: -4}"
+  fi
+  read -rp "$(echo -e "${WHITE}API key${NC} (blank if none) [${DIM}${key_display}${NC}]: ")" input_key
+  local key="${input_key:-$default_key}"
+
+  # Test connection
+  echo ""
+  info "Testing connection to ${host}..."
+  OLLAMA_HOST="$host" OLLAMA_API_KEY="$key"
+  if ollama_health; then
+    ok "Connected to Ollama"
+
+    local ver
+    ver=$(OLLAMA_HOST="$host" OLLAMA_API_KEY="$key" ollama_version 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)
+    [[ -n "$ver" ]] && echo -e "  ${DIM}version: ${ver}${NC}"
+  else
+    warn "Could not reach ${host} — saving config anyway"
+  fi
+
+  # Default model
+  echo ""
+  local default_model="${OLLAMA_DEFAULT_MODEL}"
+  read -rp "$(echo -e "${WHITE}Default model${NC} (blank for interactive picker) [${DIM}${default_model}${NC}]: ")" input_model
+  local model="${input_model:-$default_model}"
+
+  # Write config
+  mkdir -p "$CONFIG_DIR"
+  cat > "$CONFIG_DIR/.env" <<ENVEOF
+# claude-ollama configuration — generated $(date +%Y-%m-%d)
+OLLAMA_HOST=${host}
+OLLAMA_API_KEY=${key}
+OLLAMA_DEFAULT_MODEL=${model}
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+ENVEOF
+  chmod 600 "$CONFIG_DIR/.env"
+
+  echo ""
+  ok "Config saved to ${CONFIG_DIR}/.env"
+  echo -e "${DIM}Run 'claude-ollama' to start, or 'claude-ollama --test' to verify.${NC}"
+}
+
+###############################################################################
+# Connection test
+###############################################################################
+run_test() {
+  echo -e "${BOLD}claude-ollama${NC} — connectivity test"
+  echo -e "${DIM}Host: ${OLLAMA_HOST}${NC}"
+  [[ -n "$OLLAMA_API_KEY" ]] && echo -e "${DIM}Auth: API key (${OLLAMA_API_KEY:0:8}...)${NC}"
+  echo ""
+
+  # 1. Health
+  if ollama_health; then
+    ok "Ollama is reachable"
+  else
+    die "Cannot reach Ollama at ${OLLAMA_HOST}"
+  fi
+
+  # 2. Version
+  local ver
+  ver=$(ollama_version 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)
+  if [[ -n "$ver" ]]; then
+    ok "Ollama version: ${ver}"
+  else
+    warn "Could not fetch version (non-critical)"
+  fi
+
+  # 3. Models
+  local model_json
+  model_json=$(ollama_models 2>/dev/null || true)
+  if [[ -n "$model_json" ]]; then
+    local count
+    count=$(echo "$model_json" | jq '.models | length' 2>/dev/null || echo 0)
+    ok "${count} model(s) available"
+    if [[ "$count" -gt 0 ]]; then
+      echo ""
+      echo -e "${WHITE}Models:${NC}"
+      echo "$model_json" | jq -r '.models[].name' 2>/dev/null | while read -r m; do
+        echo -e "  ${MAGENTA}•${NC} $m"
+      done
+    fi
+  else
+    warn "Could not list models"
+  fi
+
+  # 4. Check Anthropic Messages API compatibility (/v1/messages)
+  echo ""
+  info "Checking Anthropic Messages API compatibility..."
+  local msgs_url="${OLLAMA_HOST}/v1/messages"
+  local -a auth_h=()
+  local ah
+  ah="$(_auth_header)"
+  [[ -n "$ah" ]] && auth_h=(-H "$ah")
+
+  local status_code
+  status_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 \
+    -X POST "${auth_h[@]}" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"test","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
+    "$msgs_url" 2>/dev/null || echo "000")
+
+  if [[ "$status_code" == "000" ]]; then
+    warn "/v1/messages endpoint not reachable"
+    echo -e "  ${DIM}Claude Code requires the Anthropic Messages API format.${NC}"
+    echo -e "  ${DIM}Consider adding a proxy (litellm, openai-to-anthropic) in front of Ollama.${NC}"
+  elif [[ "$status_code" =~ ^(200|400|401|422)$ ]]; then
+    ok "/v1/messages endpoint responds (HTTP ${status_code})"
+  else
+    warn "/v1/messages returned HTTP ${status_code}"
+    echo -e "  ${DIM}May need a translation proxy for Claude Code compatibility.${NC}"
+  fi
+
+  # 5. Check OpenAI-compatible endpoint (/v1/chat/completions)
+  info "Checking OpenAI-compatible endpoint..."
+  local oai_url="${OLLAMA_HOST}/v1/chat/completions"
+  status_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 \
+    -X POST "${auth_h[@]}" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"test","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
+    "$oai_url" 2>/dev/null || echo "000")
+
+  if [[ "$status_code" == "000" ]]; then
+    warn "/v1/chat/completions not reachable"
+  elif [[ "$status_code" =~ ^(200|400|401|422|404)$ ]]; then
+    ok "/v1/chat/completions responds (HTTP ${status_code})"
+  else
+    warn "/v1/chat/completions returned HTTP ${status_code}"
+  fi
+
+  echo ""
+  ok "Test complete"
+}
+
+###############################################################################
+# List models
+###############################################################################
+run_list_models() {
+  if ! ollama_health; then
+    die "Cannot reach Ollama at ${OLLAMA_HOST}"
+  fi
+
+  local model_json
+  model_json=$(ollama_models) || die "Failed to fetch models"
+
+  local count
+  count=$(echo "$model_json" | jq '.models | length')
+
+  echo -e "${BOLD}Models on ${CYAN}${OLLAMA_HOST}${NC}  ${DIM}(${count})${NC}"
+  echo ""
+
+  if [[ "$count" -eq 0 ]]; then
+    warn "No models found. Pull one with: ollama pull <model>"
+    exit 0
+  fi
+
+  # Table: name | size | modified
+  printf "  ${WHITE}%-40s %-10s %s${NC}\n" "NAME" "SIZE" "MODIFIED"
+  echo "$model_json" | jq -r '.models[] | [.name, (.size / 1073741824 | . * 100 | floor / 100 | tostring + " GB"), .modified_at[:10]] | @tsv' 2>/dev/null | \
+    while IFS=$'\t' read -r name size modified; do
+      printf "  ${MAGENTA}%-40s${NC} %-10s ${DIM}%s${NC}\n" "$name" "$size" "$modified"
+    done
+}
+
+###############################################################################
+# Interactive model picker
+###############################################################################
+pick_model() {
+  if ! ollama_health; then
+    die "Cannot reach Ollama at ${OLLAMA_HOST}. Run 'claude-ollama --setup' to configure."
+  fi
+
+  local model_json
+  model_json=$(ollama_models) || die "Failed to fetch models"
+
+  local count
+  count=$(echo "$model_json" | jq '.models | length')
+
+  if [[ "$count" -eq 0 ]]; then
+    die "No models available on ${OLLAMA_HOST}. Pull one with: ollama pull <model>"
+  fi
+
+  # Build array
+  local -a models=()
+  while IFS= read -r line; do
+    models+=("$line")
+  done < <(echo "$model_json" | jq -r '.models[].name')
+
+  # Single model — auto-select
+  if [[ "$count" -eq 1 ]]; then
+    echo -e "${CYAN}Auto-selecting${NC} ${BOLD}${models[0]}${NC} ${DIM}(only model available)${NC}"
+    SELECTED_MODEL="${models[0]}"
+    return
+  fi
+
+  # Multiple models — show picker
+  echo -e "${BOLD}Select a model:${NC}"
+  echo ""
+  for i in "${!models[@]}"; do
+    printf "  ${WHITE}%2d)${NC} %s\n" "$((i + 1))" "${models[$i]}"
+  done
+  echo ""
+
+  while true; do
+    read -rp "$(echo -e "${CYAN}Enter number${NC} [1-${count}]: ")" choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
+      SELECTED_MODEL="${models[$((choice - 1))]}"
+      return
+    fi
+    # Also accept model name directly
+    for m in "${models[@]}"; do
+      if [[ "$m" == "$choice" ]]; then
+        SELECTED_MODEL="$m"
+        return
+      fi
+    done
+    echo -e "${RED}Invalid selection${NC}"
+  done
+}
+
+###############################################################################
+# Launch Claude Code
+###############################################################################
+launch_claude() {
+  local model="$1"
+  shift
+
+  need_cmd claude
+
+  echo -e "${GREEN}Launching${NC} ${BOLD}Claude Code${NC} → ${CYAN}${OLLAMA_HOST}${NC} / ${MAGENTA}${BOLD}${model}${NC}"
+  echo ""
+
+  # Point Claude Code at the Ollama endpoint
+  export ANTHROPIC_BASE_URL="${OLLAMA_HOST}"
+  export ANTHROPIC_API_KEY="${OLLAMA_API_KEY:-not-needed}"
+  export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC}"
+
+  # Launch — exec replaces this process
+  exec claude --model "$model" "$@"
+}
+
+###############################################################################
+# Help
+###############################################################################
+show_help() {
+  cat <<'HELPEOF'
+claude-ollama — Claude Code wrapper for Ollama
+
+USAGE
+  claude-ollama                        Interactive model picker + launch
+  claude-ollama <model> [args...]      Launch with specific model
+  claude-ollama --setup                Configure Ollama connection
+  claude-ollama --test                 Test connectivity & API compatibility
+  claude-ollama --models               List available models
+  claude-ollama --help                 Show this help
+
+ENVIRONMENT
+  OLLAMA_HOST              Server URL        (default: http://localhost:11434)
+  OLLAMA_API_KEY           Auth proxy key    (default: none)
+  OLLAMA_DEFAULT_MODEL     Auto-select model (default: none / interactive)
+
+CONFIG
+  Config is stored at ~/.config/claude-ollama/.env
+  Project-local .env files are also loaded (takes precedence).
+  Run --setup for interactive configuration.
+
+EXAMPLES
+  claude-ollama qwen3:8b
+  claude-ollama deepseek-coder-v2 --verbose
+  OLLAMA_HOST=http://192.168.8.239:11434 claude-ollama llama3.1
+
+HELPEOF
+}
+
+###############################################################################
+# Main
+###############################################################################
+main() {
+  need_cmd curl
+  need_cmd jq
+
+  case "${1:-}" in
+    --setup|-s)
+      run_setup
+      ;;
+    --test|-t)
+      run_test
+      ;;
+    --models|--list|-l)
+      run_list_models
+      ;;
+    --help|-h)
+      show_help
+      ;;
+    --*)
+      die "Unknown flag: $1  (try --help)"
+      ;;
+    "")
+      # No args — use default model or interactive picker
+      if [[ -n "$OLLAMA_DEFAULT_MODEL" ]]; then
+        launch_claude "$OLLAMA_DEFAULT_MODEL"
+      else
+        # First-run detection
+        if [[ ! -f "$CONFIG_DIR/.env" && ! -f "$SCRIPT_DIR/.env" ]]; then
+          echo -e "${YELLOW}No config found.${NC} Let's set up your Ollama connection."
+          echo ""
+          run_setup
+          echo ""
+          # Reload config
+          if [[ -f "$CONFIG_DIR/.env" ]]; then
+            set -a; source "$CONFIG_DIR/.env"; set +a
+          fi
+        fi
+        pick_model
+        launch_claude "$SELECTED_MODEL"
+      fi
+      ;;
+    *)
+      # Model name provided as first arg
+      local model="$1"
+      shift
+      launch_claude "$model" "$@"
+      ;;
+  esac
+}
+
+main "$@"
