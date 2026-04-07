@@ -54,25 +54,26 @@ model_list:
       model: "ollama/deepseek-r1:7b"
       api_base: "http://host.docker.internal:11435"
 
-# -- Claude model aliases → route to deepseek-r1:14b --
-  # Claude Code sends background requests using these model names internally
+# -- Claude model aliases → route to ministral (same model as primary) --
+  # Claude Code sends background requests using these model names internally.
+  # IMPORTANT: These MUST route to the same Ollama model as the primary to
+  # prevent GPU memory thrashing on single-GPU setups (e.g. RTX 3060 12GB).
+  # Ollama can only hold one model at a time; loading a different model here
+  # would evict the primary and cause 2-minute timeout cascades.
   - model_name: "claude-haiku-4-5-20251001"
     litellm_params:
-      model: "ollama/deepseek-r1:14b"
+      model: "ollama/ministral-3-8b-instruct-4bit"
       api_base: "http://host.docker.internal:11435"
-      num_ctx: 16384
 
   - model_name: "claude-sonnet-4-5-20250514"
     litellm_params:
-      model: "ollama/deepseek-r1:14b"
+      model: "ollama/ministral-3-8b-instruct-4bit"
       api_base: "http://host.docker.internal:11435"
-      num_ctx: 16384
 
   - model_name: "claude-opus-4-5-20250514"
     litellm_params:
-      model: "ollama/deepseek-r1:14b"
+      model: "ollama/ministral-3-8b-instruct-4bit"
       api_base: "http://host.docker.internal:11435"
-      num_ctx: 16384
 
 # Wildcard fallback: any model not listed above is tried against Ollama
   - model_name: "ollama/*"
