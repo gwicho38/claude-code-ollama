@@ -12,10 +12,22 @@ model_list:
       model: "ollama/gemma3:12b-it-qat"
       api_base: "http://host.docker.internal:11435"
 
+  # -- Ministral --
+  - model_name: "ministral-3-8b-instruct-4bit"
+    litellm_params:
+      model: "ollama/ministral-3-8b-instruct-4bit"
+      api_base: "http://host.docker.internal:11435"
+
   # -- Qwen 3 --
   - model_name: "qwen3:8b"
     litellm_params:
       model: "ollama/qwen3:8b"
+      api_base: "http://host.docker.internal:11435"
+      num_ctx: 32768
+
+  - model_name: "qwen3:8b-notk"
+    litellm_params:
+      model: "ollama/qwen3:8b-notk"
       api_base: "http://host.docker.internal:11435"
       num_ctx: 32768
 
@@ -71,6 +83,8 @@ model_list:
 litellm_settings:
   # Increase timeout for cold-start model loading
   request_timeout: 300
+  # Drop Claude-specific params that Ollama doesn't support (e.g. context_management)
+  drop_params: true
   # Drop internal usage tracking
   telemetry: false
 
