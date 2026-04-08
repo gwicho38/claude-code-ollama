@@ -36,6 +36,11 @@ model_list:
       model: "ollama/qwen2.5-coder:7b"
       api_base: "http://host.docker.internal:11435"
 
+  - model_name: "mistral:7b"
+    litellm_params:
+      model: "ollama/mistral:7b"
+      api_base: "http://host.docker.internal:11435"
+
   - model_name: "deepseek-r1:14b"
     litellm_params:
       model: "ollama/deepseek-r1:14b"
